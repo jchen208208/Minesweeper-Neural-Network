@@ -30,12 +30,15 @@ class MinesweeperEnv:
         mine_count: int = 4,
         seed: int | None = None,
         rewards: RewardConfig | None = None,
+        no_guess: bool = False,
     ) -> None:
         self.width = width
         self.height = height
         self.mine_count = mine_count
         self.rewards = rewards or RewardConfig()
-        self.board = MinesweeperBoard(width, height, mine_count, seed)
+        self.board = MinesweeperBoard(
+            width, height, mine_count, seed, no_guess=no_guess
+        )
         self.last_action: int | None = None
 
     @property

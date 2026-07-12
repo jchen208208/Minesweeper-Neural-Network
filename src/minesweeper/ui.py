@@ -9,9 +9,21 @@ from minesweeper.env import MinesweeperEnv
 
 
 CELL_SIZE = 40
-STATUS_HEIGHT = 56
+STATUS_HEIGHT = 98
 GRID_LINE = 2
 FPS = 60
+MIN_WIDTH = 5
+MAX_WIDTH = 40
+MIN_HEIGHT = 5
+MAX_HEIGHT = 30
+
+# name -> (width, height, mines)
+DIFFICULTIES: dict[str, tuple[int, int, int]] = {
+    "Beginner": (9, 9, 10),
+    "Intermediate": (16, 16, 40),
+    "Expert": (30, 16, 99),
+}
+DIFFICULTY_KEYS = list(DIFFICULTIES)
 
 COLORS = {
     "background": (30, 34, 42),
@@ -40,19 +52,44 @@ NUMBER_COLORS = {
 
 
 class MinesweeperUI:
-    def __init__(self, width: int, height: int, mines: int, seed: int | None) -> None:
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        mines: int,
+        seed: int | None,
+        no_guess: bool = True,
+        difficulty: str | None = None,
+    ) -> None:
         pygame.init()
         pygame.display.set_caption("Minesweeper DDQN Environment")
 
-        self.env = MinesweeperEnv(width=width, height=height, mine_count=mines, seed=seed)
         self.seed = seed
-        self.screen_width = width * CELL_SIZE
-        self.screen_height = height * CELL_SIZE + STATUS_HEIGHT
-        self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
+        self.no_guess = no_guess
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("consolas", 22, bold=True)
         self.small_font = pygame.font.SysFont("consolas", 16)
         self.last_reward = 0.0
+        self.difficulty = difficulty
+        self.set_board(width, height, mines)
+
+    def set_board(self, width: int, height: int, mines: int) -> None:
+        self.env = MinesweeperEnv(
+            width=width,
+            height=height,
+            mine_count=mines,
+            seed=self.seed,
+            no_guess=self.no_guess,
+        )
+        self.screen_width = width * CELL_SIZE
+        self.screen_height = height * CELL_SIZE + STATUS_HEIGHT
+        self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
+        self.last_reward = 0.0
+
+    def select_difficulty(self, name: str) -> None:
+        self.difficulty = name
+        width, height, mines = DIFFICULTIES[name]
+        self.set_board(width, height, mines)
 
     def run(self) -> None:
         running = True
@@ -60,8 +97,8 @@ class MinesweeperUI:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
-                elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                    self.reset()
+                elif event.type == pygame.KEYDOWN:
+                    self.handle_key(event)
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     self.handle_click(event)
 
@@ -69,6 +106,48 @@ class MinesweeperUI:
             self.clock.tick(FPS)
 
         pygame.quit()
+
+    def handle_key(self, event: pygame.event.Event) -> None:
+        if event.key == pygame.K_r:
+            self.reset()
+            return
+        preset_keys = {
+            pygame.K_1: 0,
+            pygame.K_2: 1,
+            pygame.K_3: 2,
+        }
+        if event.key in preset_keys:
+            self.select_difficulty(DIFFICULTY_KEYS[preset_keys[event.key]])
+            return
+
+        if event.key == pygame.K_LEFT:
+            self._resize_board(self.env.width - 1, self.env.height)
+        elif event.key == pygame.K_RIGHT:
+            self._resize_board(self.env.width + 1, self.env.height)
+        elif event.key == pygame.K_UP:
+            self._resize_board(self.env.width, self.env.height + 1)
+        elif event.key == pygame.K_DOWN:
+            self._resize_board(self.env.width, self.env.height - 1)
+        elif event.key == pygame.K_LEFTBRACKET:
+            self._set_mines(self.env.mine_count - 1)
+        elif event.key == pygame.K_RIGHTBRACKET:
+            self._set_mines(self.env.mine_count + 1)
+
+    def _resize_board(self, width: int, height: int) -> None:
+        width = max(MIN_WIDTH, min(MAX_WIDTH, width))
+        height = max(MIN_HEIGHT, min(MAX_HEIGHT, height))
+        area = width * height
+        old_area = self.env.width * self.env.height
+        old_density = self.env.mine_count / old_area
+        mines = max(1, min(area - 1, round(old_density * area)))
+        self.difficulty = None
+        self.set_board(width, height, mines)
+
+    def _set_mines(self, mines: int) -> None:
+        area = self.env.width * self.env.height
+        mines = max(1, min(area - 1, mines))
+        self.difficulty = None
+        self.set_board(self.env.width, self.env.height, mines)
 
     def reset(self) -> None:
         self.env.reset(self.seed)
@@ -144,16 +223,27 @@ class MinesweeperUI:
             message = "Mine hit. Press R to reset."
             color = COLORS["loss"]
         else:
-            message = "Left click: reveal    Right click: flag    R: reset"
+            message = "L-click reveal   R-click flag   R reset"
             color = COLORS["text"]
 
         mines_left = max(0, board.mine_count - len(board.flags))
-        detail = f"Mines left: {mines_left}    Last reward: {self.last_reward:.2f}"
+        mode = "no-guess" if self.no_guess else "classic"
+        difficulty = self.difficulty or "Custom"
+        detail = (
+            f"Mines left: {mines_left}   "
+            f"{difficulty} {self.env.width}x{self.env.height}   {mode}"
+        )
+        presets = "Size: 1 Beginner  2 Intermediate  3 Expert"
+        custom = "Custom: arrows resize board  [ / ] mines"
 
         message_surface = self.small_font.render(message, True, color)
         detail_surface = self.small_font.render(detail, True, COLORS["text"])
-        self.screen.blit(message_surface, (12, y + 8))
-        self.screen.blit(detail_surface, (12, y + 30))
+        presets_surface = self.small_font.render(presets, True, COLORS["text"])
+        self.screen.blit(message_surface, (12, y + 6))
+        self.screen.blit(detail_surface, (12, y + 28))
+        self.screen.blit(presets_surface, (12, y + 50))
+        custom_surface = self.small_font.render(custom, True, COLORS["text"])
+        self.screen.blit(custom_surface, (12, y + 72))
 
     def _hover_cell(self) -> tuple[int, int] | None:
         mouse_x, mouse_y = pygame.mouse.get_pos()
@@ -194,12 +284,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=9)
     parser.add_argument("--mines", type=int, default=10)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--difficulty",
+        choices=DIFFICULTY_KEYS,
+        default=None,
+        help="Start with a preset board size instead of --width/--height/--mines.",
+    )
+    parser.add_argument(
+        "--allow-guessing",
+        action="store_true",
+        help="Disable no-guess generation and allow boards that need guessing.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    MinesweeperUI(args.width, args.height, args.mines, args.seed).run()
+    if args.difficulty is not None:
+        width, height, mines = DIFFICULTIES[args.difficulty]
+    else:
+        width, height, mines = args.width, args.height, args.mines
+    MinesweeperUI(
+        width,
+        height,
+        mines,
+        args.seed,
+        no_guess=not args.allow_guessing,
+        difficulty=args.difficulty,
+    ).run()
 
 
 if __name__ == "__main__":

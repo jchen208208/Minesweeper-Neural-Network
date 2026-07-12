@@ -5,6 +5,8 @@ from enum import Enum
 import random
 from typing import Iterable
 
+from minesweeper.solver import is_no_guess_solvable
+
 
 Cell = tuple[int, int]
 
@@ -32,6 +34,8 @@ class MinesweeperBoard:
         height: int = 5,
         mine_count: int = 4,
         seed: int | None = None,
+        no_guess: bool = False,
+        no_guess_attempts: int = 1000,
     ) -> None:
         if width <= 0 or height <= 0:
             raise ValueError("width and height must be positive")
@@ -43,6 +47,8 @@ class MinesweeperBoard:
         self.width = width
         self.height = height
         self.mine_count = mine_count
+        self.no_guess = no_guess
+        self.no_guess_attempts = no_guess_attempts
         self._rng = random.Random(seed)
         self._initial_seed = seed
         self.reset(seed)
@@ -94,15 +100,45 @@ class MinesweeperBoard:
         if self.mine_count > len(candidates):
             raise ValueError("mine_count is too high for first-click safety")
 
-        self.mines = set(self._rng.sample(candidates, self.mine_count))
+        if self.no_guess:
+            self.mines = self._sample_no_guess_mines(safe_cell)
+        else:
+            self.mines = set(self._rng.sample(candidates, self.mine_count))
         self._compute_counts()
         self.mines_placed = True
 
-    def _compute_counts(self) -> None:
-        self.counts = [[0 for _ in range(self.width)] for _ in range(self.height)]
-        for row, col in self.mines:
+    def _sample_no_guess_mines(self, safe_cell: Cell) -> set[Cell]:
+        """Generate a mine layout the logical solver can clear without guessing.
+
+        The first click and its neighbors are kept mine-free so the opening
+        flood-fills a region, which is what makes most layouts solvable.
+        """
+        safe_row, safe_col = safe_cell
+        opening = {safe_cell, *self.neighbors(safe_row, safe_col)}
+        candidates = [cell for cell in self.cells() if cell not in opening]
+        if len(candidates) < self.mine_count:
+            candidates = [cell for cell in self.cells() if cell != safe_cell]
+
+        mines: set[Cell] = set()
+        for _ in range(self.no_guess_attempts):
+            mines = set(self._rng.sample(candidates, self.mine_count))
+            counts = self._counts_for(mines)
+            if is_no_guess_solvable(
+                self.width, self.height, self.mine_count, counts, safe_cell
+            ):
+                return mines
+        # Fall back to the last attempt so generation always terminates.
+        return mines
+
+    def _counts_for(self, mines: set[Cell]) -> list[list[int]]:
+        counts = [[0 for _ in range(self.width)] for _ in range(self.height)]
+        for row, col in mines:
             for neighbor_row, neighbor_col in self.neighbors(row, col):
-                self.counts[neighbor_row][neighbor_col] += 1
+                counts[neighbor_row][neighbor_col] += 1
+        return counts
+
+    def _compute_counts(self) -> None:
+        self.counts = self._counts_for(self.mines)
 
     def reveal(self, row: int, col: int) -> RevealResult:
         cell = (row, col)
